@@ -1,0 +1,85 @@
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: 10s
+  write_timeout: 10s
+  idle_timeout: 120s
+
+proxy:
+  target: "http://localhost:8081"
+  timeout: 30s
+  max_idle_conns: 100
+  idle_conn_timeout: 90s
+  tls_timeout: 10s
+  response_header_timeout: 10s
+  expect_continue_timeout: 1s
+  max_conns_per_host: 100
+  retry_count: 3
+  retry_wait_time: 1s
+
+log:
+  level: "info"
+  format: "json"
+
+db:
+  type: "postgres"
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  database: "postgres"
+  pool:
+    max_conns: 10
+    min_conns: 2
+    batch_size: 100
+
+rate_limit:
+  enabled: true
+  global:
+    requests: 1000
+    window: 1m
+    burst: 50
+  per_ip:
+    enabled: true
+    requests: 100
+    window: 1m
+    burst: 10
+    whitelist:
+      - "127.0.0.1"
+      - "10.0.0.0/8"
+  routes:
+    - path: "/api/v1/users"
+      method: "POST"
+      requests: 10
+      window: 1m
+      burst: 5
+      group: "user_management"
+      priority: 1
+    - path: "/api/v1/*"
+      method: "*"
+      requests: 500
+      window: 1m
+      burst: 20
+      group: "api_v1"
+      priority: 0
+  token_bucket:
+    enabled: true
+    capacity: 100
+    fill_rate: 10
+    fill_interval: 1s
+  sliding_window:
+    enabled: true
+    size: 1m
+    segments: 60
+  response:
+    status_code: 429
+    message: "Too Many Requests"
+    headers: true
+  storage:
+    type: "redis"
+    redis:
+      host: "localhost"
+      port: 6379
+      password: "SUPER_SECRET_PASSWORD"
+      db: 0
+      timeout: 5s

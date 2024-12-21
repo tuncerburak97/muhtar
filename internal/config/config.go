@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/viper"
@@ -23,16 +24,17 @@ type ServerConfig struct {
 }
 
 type ProxyConfig struct {
-	Target                string        `mapstructure:"target"`
-	Timeout               time.Duration `mapstructure:"timeout"`
-	MaxIdleConns          int           `mapstructure:"max_idle_conns"`
-	IdleConnTimeout       time.Duration `mapstructure:"idle_conn_timeout"`
-	TLSTimeout            time.Duration `mapstructure:"tls_timeout"`
-	ResponseHeaderTimeout time.Duration `mapstructure:"response_header_timeout"`
-	ExpectContinueTimeout time.Duration `mapstructure:"expect_continue_timeout"`
-	MaxConnsPerHost       int           `mapstructure:"max_conns_per_host"`
-	RetryCount            int           `mapstructure:"retry_count"`
-	RetryWaitTime         time.Duration `mapstructure:"retry_wait_time"`
+	Target                string          `mapstructure:"target"`
+	Timeout               time.Duration   `mapstructure:"timeout"`
+	MaxIdleConns          int             `mapstructure:"max_idle_conns"`
+	IdleConnTimeout       time.Duration   `mapstructure:"idle_conn_timeout"`
+	TLSTimeout            time.Duration   `mapstructure:"tls_timeout"`
+	ResponseHeaderTimeout time.Duration   `mapstructure:"response_header_timeout"`
+	ExpectContinueTimeout time.Duration   `mapstructure:"expect_continue_timeout"`
+	MaxConnsPerHost       int             `mapstructure:"max_conns_per_host"`
+	RetryCount            int             `mapstructure:"retry_count"`
+	RetryWaitTime         time.Duration   `mapstructure:"retry_wait_time"`
+	Transform             TransformConfig `mapstructure:"transform"`
 }
 
 type LogConfig struct {
@@ -120,10 +122,27 @@ type RouteLimit struct {
 	Priority int           `mapstructure:"priority"` // Priority for overlapping rules
 }
 
-func LoadConfig() (*Config, error) {
+// TransformConfig represents the configuration for request/response transformations
+type TransformConfig struct {
+	// Directory containing transformation scripts
+	ScriptsDir string `mapstructure:"scripts_dir"`
+	// Service mappings
+	Services map[string]ServiceTransform `mapstructure:"services"`
+}
+
+// ServiceTransform represents transformation rules for a specific service
+type ServiceTransform struct {
+	// Exact URL to match
+	URL string `mapstructure:"url"`
+	// Service name for script directory
+	ServiceName string `mapstructure:"service_name"`
+}
+
+func LoadConfig(configPath string) (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
-	viper.AddConfigPath("./config")
+	viper.AddConfigPath(filepath.Dir(configPath))
+	viper.SetConfigFile(configPath)
 
 	viper.AutomaticEnv()
 

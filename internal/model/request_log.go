@@ -6,18 +6,25 @@ import (
 )
 
 type RequestLog struct {
-	ID          string            `json:"id" bson:"_id" db:"id"`
-	TraceID     string            `json:"trace_id" bson:"trace_id" db:"trace_id"`
-	Timestamp   time.Time         `json:"timestamp" bson:"timestamp" db:"timestamp"`
-	Method      string            `json:"method" bson:"method" db:"method"`
-	URL         string            `json:"url" bson:"url" db:"url"`
-	Path        string            `json:"path" bson:"path" db:"path"`
-	PathParams  map[string]string `json:"path_params" bson:"path_params" db:"path_params"`
-	QueryParams map[string]string `json:"query_params" bson:"query_params" db:"query_params"`
-	Headers     map[string]string `json:"headers" bson:"headers" db:"headers"`
-	RequestBody json.RawMessage   `json:"request_body" bson:"request_body" db:"request_body"`
-	ClientIP    string            `json:"client_ip" bson:"client_ip" db:"client_ip"`
-	UserAgent   string            `json:"user_agent" bson:"user_agent" db:"user_agent"`
+	ID             string            `json:"id"`
+	Method         string            `json:"method"`
+	Path           string            `json:"path"`
+	StatusCode     int               `json:"status_code"`
+	Duration       time.Duration     `json:"duration"`
+	RequestSize    int               `json:"request_size"`
+	ResponseSize   int               `json:"response_size"`
+	ClientIP       string            `json:"client_ip"`
+	Timestamp      time.Time         `json:"timestamp"`
+	RequestHeaders map[string]string `json:"request_headers"`
+	TraceID        string            `json:"trace_id"`
+	URL            string            `json:"url"`
+	PathParams     map[string]string `json:"path_params"`
+	QueryParams    map[string]string `json:"query_params"`
+	RequestBody    json.RawMessage   `json:"request_body"`
+	ResponseBody   json.RawMessage   `json:"response_body"`
+	Error          string            `json:"error,omitempty"`
+	Headers        map[string]string `json:"headers"`
+	UserAgent      string            `json:"user_agent"`
 }
 
 type ResponseLog struct {

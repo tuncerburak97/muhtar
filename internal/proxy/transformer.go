@@ -9,30 +9,30 @@ import (
 	"github.com/tuncerburak97/muhtar/internal/config"
 )
 
-// Transformer handles HTTP request/response transformations
-type Transformer struct {
+// HttpRequestResponseTransformer handles HTTP request/response transformations
+type HttpRequestResponseTransformer struct {
 	config *config.ProxyConfig
 }
 
 // NewTransformer creates a new transformer instance
-func NewTransformer(cfg *config.ProxyConfig) *Transformer {
-	return &Transformer{
+func NewTransformer(cfg *config.ProxyConfig) *HttpRequestResponseTransformer {
+	return &HttpRequestResponseTransformer{
 		config: cfg,
 	}
 }
 
 // TransformRequest modifies the outgoing request based on configuration
-func (t *Transformer) TransformRequest(req *http.Request) error {
+func (t *HttpRequestResponseTransformer) TransformRequest(req *http.Request) error {
 	return t.transformRequestHeaders(req)
 }
 
 // TransformResponse modifies the incoming response based on configuration
-func (t *Transformer) TransformResponse(res *http.Response) error {
+func (t *HttpRequestResponseTransformer) TransformResponse(res *http.Response) error {
 	return t.transformResponseHeaders(res)
 }
 
 // Header transformation functions
-func (t *Transformer) transformRequestHeaders(req *http.Request) error {
+func (t *HttpRequestResponseTransformer) transformRequestHeaders(req *http.Request) error {
 	// Remove unwanted headers
 	headersToRemove := []string{
 		"X-Powered-By",
@@ -75,7 +75,7 @@ func (t *Transformer) transformRequestHeaders(req *http.Request) error {
 	return nil
 }
 
-func (t *Transformer) transformResponseHeaders(res *http.Response) error {
+func (t *HttpRequestResponseTransformer) transformResponseHeaders(res *http.Response) error {
 	// Remove internal headers
 	headersToRemove := []string{
 		"X-Internal-Server",

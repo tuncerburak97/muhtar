@@ -163,7 +163,7 @@ func (r *OracleRepository) SaveLog(ctx context.Context, log *model.Log) error {
 	}
 
 	_, err = r.DB.ExecContext(ctx,
-		`INSERT INTO logs (
+		`INSERT INTO http_log (
 			id, trace_id, process_type, timestamp, method, url, path,
 			path_params, query_params, headers, body, client_ip,
 			user_agent, status_code, response_time, content_length,
@@ -185,7 +185,7 @@ func (r *OracleRepository) SaveLogs(ctx context.Context, logs []*model.Log) erro
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO logs (
+		INSERT INTO http_log (
 			id, trace_id, process_type, timestamp, method, url, path,
 			path_params, query_params, headers, body, client_ip,
 			user_agent, status_code, response_time, content_length,

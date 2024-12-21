@@ -1,54 +1,58 @@
 package main
 
 import (
-	"context"
+	"flag"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/tuncerburak97/muhtar/internal/config"
-	"github.com/tuncerburak97/muhtar/internal/logger"
 	"github.com/tuncerburak97/muhtar/internal/metrics"
 	"github.com/tuncerburak97/muhtar/internal/proxy"
 	"github.com/tuncerburak97/muhtar/internal/ratelimit"
 	"github.com/tuncerburak97/muhtar/internal/repository"
+	"github.com/tuncerburak97/muhtar/internal/transform"
 )
 
 func main() {
-	// Load config
-	cfg, err := config.LoadConfig()
+	// Parse command line flags
+	configPath := flag.String("config", "config/config.yaml", "path to config file")
+	flag.Parse()
+
+	// Load configuration
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to load config: %v", err))
+		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
 
-	// Initialize logger
-	logger.Init(cfg.Log.Level)
-	log := logger.GetLogger()
+	// Configure logging
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	if cfg.Log.Format == "json" {
+		log.Logger = log.Output(os.Stdout)
+	}
+	level, err := zerolog.ParseLevel(cfg.Log.Level)
+	if err != nil {
+		log.Warn().Err(err).Msg("Invalid log level, defaulting to info")
+		level = zerolog.InfoLevel
+	}
+	zerolog.SetGlobalLevel(level)
 
 	// Initialize metrics collector
 	metricsCollector := metrics.GetMetricsCollector("muhtar", "muhtar_proxy")
 
-	// Create Fiber app
-	app := fiber.New(fiber.Config{
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-		IdleTimeout:  cfg.Server.IdleTimeout,
-	})
-
-	// Create repository
-	repo, err := repository.NewRepository(&cfg.DB)
+	// Initialize repository
+	repo, err := repository.NewRepository(cfg.DB)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create repository")
+		log.Fatal().Err(err).Msg("Failed to initialize repository")
 	}
 
-	// Run migrations
-	if err := repo.Migrate(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Database migrations failed")
-	}
-	log.Info().Msg("Database migrations completed successfully")
-
-	// Initialize rate limiter
-	var rateLimiter ratelimit.Limiter
+	// Initialize rate limiter if enabled
+	var rateLimiter *ratelimit.Service
 	if cfg.RateLimit.Enabled {
 		var store ratelimit.Store
 		if cfg.RateLimit.Storage.Type == "redis" {
@@ -66,38 +70,64 @@ func main() {
 			log.Fatal().Err(err).Msg("Failed to create rate limit store")
 		}
 		rateLimiter = ratelimit.NewService(&cfg.RateLimit, store)
-	}
-
-	// Create proxy handler
-	proxyHandler, err := proxy.NewProxyHandler(&cfg.Proxy, log, repo, metricsCollector)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create proxy handler")
-	}
-
-	// Setup routes
-	app.Get("/metrics", func(c *fiber.Ctx) error {
-		jsonData, err := metricsCollector.GetMetricsJSON()
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{
-				"error": fmt.Sprintf("Failed to get metrics: %v", err),
-			})
+			log.Fatal().Err(err).Msg("Failed to initialize rate limiter")
 		}
+	}
 
-		c.Set("Content-Type", "application/json")
-		return c.Send(jsonData)
+	// Initialize transform engine
+	transformEngine, err := transform.NewEngine(cfg.Proxy.Transform)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize transform engine")
+	}
+
+	// Create Fiber app
+	app := fiber.New(fiber.Config{
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
 	})
 
-	// Apply rate limit middleware if enabled
-	if cfg.RateLimit.Enabled {
+	// Add rate limiting middleware if enabled
+	if rateLimiter != nil {
 		app.Use(ratelimit.Middleware(rateLimiter))
 	}
 
-	app.Use("/", proxyHandler.Handle)
+	// Initialize and set up proxy handler
+	proxyHandler, err := proxy.NewProxyHandler(&cfg.Proxy, &log.Logger, repo, metricsCollector, transformEngine)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize proxy handler")
+	}
+
+	// Set up routes
+	app.All("/*", proxyHandler.Handle)
 
 	// Start server
-	serverAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	log.Info().Msgf("Starting server at: %s", serverAddr)
-	if err := app.Listen(serverAddr); err != nil {
-		log.Fatal().Err(err).Msg("Failed to start server")
+	go func() {
+		addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+		if err := app.Listen(addr); err != nil {
+			log.Fatal().Err(err).Msg("Failed to start server")
+		}
+	}()
+
+	// Graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Info().Msg("Shutting down server...")
+	if err := app.Shutdown(); err != nil {
+		log.Fatal().Err(err).Msg("Failed to shutdown server")
+	}
+
+	// Close resources
+	if err := repo.Close(); err != nil {
+		log.Error().Err(err).Msg("Failed to close repository")
+	}
+
+	if rateLimiter != nil {
+		if err := rateLimiter.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close rate limiter")
+		}
 	}
 }

@@ -152,16 +152,16 @@ func (f *RepositoryFactory) createPool(dbType string) (interface{}, error) {
 	}
 }
 
-func NewRepository(cfg *config.DBConfig) (LogRepository, error) {
+func NewRepository(cfg config.DBConfig) (LogRepository, error) {
+	log.Info().
+		Str("type", cfg.Type).
+		Str("host", cfg.Host).
+		Int("port", cfg.Port).
+		Str("database", cfg.Database).
+		Msg("Connecting to database")
+
 	switch cfg.Type {
 	case "postgres":
-		log.Info().
-			Str("type", "postgres").
-			Str("host", cfg.Host).
-			Int("port", cfg.Port).
-			Str("database", cfg.Database).
-			Msg("Connecting to database")
-
 		connStr := fmt.Sprintf(
 			"postgres://%s:%s@%s:%d/%s?pool_max_conns=%d&pool_min_conns=%d",
 			cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database,

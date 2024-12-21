@@ -2,35 +2,36 @@ package proxy
 
 import (
 	"bytes"
+	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/tuncerburak97/muhtar/internal/config"
 	"github.com/tuncerburak97/muhtar/internal/metrics"
 	"github.com/tuncerburak97/muhtar/internal/model"
 	"github.com/tuncerburak97/muhtar/internal/repository"
 	"github.com/tuncerburak97/muhtar/internal/service"
+	"github.com/tuncerburak97/muhtar/internal/transform"
 )
 
 type ProxyHandler struct {
-	proxy       *httputil.ReverseProxy
-	logger      *zerolog.Logger
-	metrics     *metrics.MetricsCollector
-	target      string
-	config      *config.ProxyConfig
-	logSvc      *service.LoggerService
-	transformer *Transformer
+	proxy                          *httputil.ReverseProxy
+	logger                         *zerolog.Logger
+	metrics                        *metrics.MetricsCollector
+	target                         string
+	config                         *config.ProxyConfig
+	logSvc                         *service.LoggerService
+	transformer                    *transform.Engine
+	httpRequestResponseTransformer *HttpRequestResponseTransformer
 }
 
-func NewProxyHandler(cfg *config.ProxyConfig, logger *zerolog.Logger, repo repository.LogRepository, metrics *metrics.MetricsCollector) (*ProxyHandler, error) {
+func NewProxyHandler(cfg *config.ProxyConfig, logger *zerolog.Logger, repo repository.LogRepository, metrics *metrics.MetricsCollector, transformer *transform.Engine) (*ProxyHandler, error) {
 	target, err := url.Parse(cfg.Target)
 	if err != nil {
 		return nil, err
@@ -54,18 +55,29 @@ func NewProxyHandler(cfg *config.ProxyConfig, logger *zerolog.Logger, repo repos
 		return nil
 	}
 
-	logSvc := service.NewLoggerService(repo, 5, 1000)
-	transformer := NewTransformer(cfg)
-
+	logSvc := service.NewLoggerService(repo, metrics, 5, 1000)
+	httpRequestResponseTransformer := NewTransformer(cfg)
 	return &ProxyHandler{
-		proxy:       proxy,
-		logger:      logger,
-		metrics:     metrics,
-		target:      cfg.Target,
-		config:      cfg,
-		logSvc:      logSvc,
-		transformer: transformer,
+		proxy:                          proxy,
+		logger:                         logger,
+		metrics:                        metrics,
+		target:                         cfg.Target,
+		config:                         cfg,
+		logSvc:                         logSvc,
+		transformer:                    transformer,
+		httpRequestResponseTransformer: httpRequestResponseTransformer,
 	}, nil
+}
+
+// convertHeaders converts map[string][]string to map[string]string
+func convertHeaders(headers map[string][]string) map[string]string {
+	result := make(map[string]string)
+	for k, v := range headers {
+		if len(v) > 0 {
+			result[k] = v[0]
+		}
+	}
+	return result
 }
 
 func (h *ProxyHandler) Handle(c *fiber.Ctx) error {
@@ -80,7 +92,6 @@ func (h *ProxyHandler) Handle(c *fiber.Ctx) error {
 
 	startTime := time.Now()
 	traceID := uuid.New().String()
-	var reqLog *model.RequestLog
 
 	// Log initial request metrics
 	method := string(c.Method())
@@ -92,158 +103,118 @@ func (h *ProxyHandler) Handle(c *fiber.Ctx) error {
 		Str("target_url", h.target).
 		Msg("Proxying request")
 
-	// Concurrent log ve metrik işlemleri
-	var wg sync.WaitGroup
-	errChan := make(chan error, 2)
-
-	// Request logging
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		reqLog = h.buildRequestLog(c, traceID)
-		h.logSvc.LogRequest(reqLog)
-	}()
-
-	// Proxy işlemi
-	responseWriter := newFiberResponseWriter(c.Response())
-	proxyErr := h.proxyRequest(c, responseWriter)
-
-	// Response logging
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := h.handleResponse(c, responseWriter, traceID, startTime, reqLog); err != nil {
-			errChan <- err
-		}
-	}()
-
-	// Wait for goroutines
-	go func() {
-		wg.Wait()
-		close(errChan)
-	}()
-
-	// Error handling
-	for err := range errChan {
-		if err != nil {
-			statusCode := fiber.StatusInternalServerError
-			h.metrics.ObserveRequestDuration(method, path, strconv.Itoa(statusCode), time.Since(startTime))
-			h.metrics.IncRequestCounter(method, path, strconv.Itoa(statusCode))
-			return c.Status(statusCode).JSON(fiber.Map{
-				"error": err.Error(),
-			})
-		}
-	}
-
-	if proxyErr != nil {
-		statusCode := fiber.StatusInternalServerError
-		h.metrics.ObserveRequestDuration(method, path, strconv.Itoa(statusCode), time.Since(startTime))
-		h.metrics.IncRequestCounter(method, path, strconv.Itoa(statusCode))
-		return c.Status(statusCode).JSON(fiber.Map{
-			"error": proxyErr.Error(),
-		})
-	}
-
-	// Set response headers
-	c.Response().Header.SetContentType("application/json")
-	return nil
-}
-
-func (h *ProxyHandler) proxyRequest(c *fiber.Ctx, responseWriter *fiberResponseWriter) error {
-	proxyReq, err := h.buildProxyRequest(c)
+	// Create target request
+	targetURL := h.config.Target + c.OriginalURL()
+	req, err := http.NewRequest(c.Method(), targetURL, bytes.NewReader(c.Body()))
 	if err != nil {
+		h.logger.Error().Err(err).Msg("Failed to create target request")
 		return err
 	}
 
-	h.proxy.ServeHTTP(responseWriter, proxyReq)
-	return nil
-}
-
-func (h *ProxyHandler) buildRequestLog(c *fiber.Ctx, traceID string) *model.RequestLog {
-	reqLog := &model.RequestLog{
-		TraceID:   traceID,
-		Timestamp: time.Now(),
-		Method:    string(c.Method()),
-		URL:       c.OriginalURL(),
-		Path:      c.Path(),
-		Headers:   make(map[string]string),
-		ClientIP:  c.IP(),
-		UserAgent: string(c.Request().Header.UserAgent()),
+	// Copy headers
+	for k, v := range c.GetReqHeaders() {
+		req.Header.Set(k, v[0])
 	}
 
-	c.Request().Header.VisitAll(func(key, value []byte) {
-		reqLog.Headers[string(key)] = string(value)
-	})
-
-	if c.Body() != nil {
-		reqLog.RequestBody = c.Body()
+	// Transform request
+	if err := h.transformer.TransformRequest(req); err != nil {
+		h.logger.Error().Err(err).Msg("Failed to transform request")
+		return err
 	}
 
-	return reqLog
-}
+	h.httpRequestResponseTransformer.TransformRequest(req)
 
-func (h *ProxyHandler) buildProxyRequest(c *fiber.Ctx) (*http.Request, error) {
-	proxyReq, err := http.NewRequest(
-		string(c.Method()),
-		c.OriginalURL(),
-		bytes.NewReader(c.Body()),
-	)
+	// log request asynchronously
+	reqLog := &model.Log{
+		ID:          uuid.New().String(),
+		TraceID:     traceID,
+		ProcessType: model.ProcessTypeRequest,
+		Timestamp:   startTime,
+		Method:      c.Method(),
+		Path:        c.Path(),
+		Headers:     convertHeaders(c.GetReqHeaders()),
+		ClientIP:    c.IP(),
+		URL:         targetURL,
+		UserAgent:   c.Get("User-Agent"),
+		Body:        c.Body(),
+	}
+	go func(log *model.Log) {
+		if err := h.logSvc.LogRequest(log); err != nil {
+			h.logger.Error().Err(err).Msg("Failed to log request")
+		}
+	}(reqLog)
+
+	// Send request
+	resp, err := h.proxy.Transport.RoundTrip(req)
 	if err != nil {
-		return nil, err
+		h.logger.Error().Err(err).Msg("Failed to send request to target")
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Transform response
+	if err := h.transformer.TransformResponse(resp); err != nil {
+		h.logger.Error().Err(err).Msg("Failed to transform response")
+		return err
 	}
 
-	c.Request().Header.VisitAll(func(key, value []byte) {
-		proxyReq.Header.Add(string(key), string(value))
-	})
+	// Copy response headers
+	for k, v := range resp.Header {
+		c.Set(k, v[0])
+	}
 
-	return proxyReq, nil
-}
-
-func (h *ProxyHandler) handleResponse(c *fiber.Ctx, responseWriter *fiberResponseWriter, traceID string, startTime time.Time, reqLog *model.RequestLog) error {
+	// Read response body
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Failed to read response body")
+		return err
+	}
 	duration := time.Since(startTime)
-	statusCode := strconv.Itoa(responseWriter.StatusCode())
-	path := c.Path()
-	method := string(c.Method())
-	responseSize := int64(len(responseWriter.Body()))
 
-	// Observe request metrics
-	h.metrics.ObserveRequestDuration(method, path, statusCode, duration)
-	h.metrics.IncRequestCounter(method, path, statusCode)
-	h.metrics.ResponseSize.With(prometheus.Labels{
-		"app":    h.metrics.AppName,
-		"method": method,
-		"path":   path,
-		"status": statusCode,
-	}).Observe(float64(responseSize))
-
-	// Log detailed metrics
 	h.logger.Info().
+		Str("trace_id", traceID).
 		Str("method", method).
 		Str("path", path).
-		Str("status", statusCode).
-		Str("trace_id", traceID).
+		Int("status_code", resp.StatusCode).
 		Dur("duration", duration).
-		Int64("response_size", responseSize).
-		Msg("Request completed")
+		Int("response_size", len(body)).
+		Str("content_type", resp.Header.Get("Content-Type")).
+		Str("cache_control", resp.Header.Get("Cache-Control")).
+		Msg("Response completed")
 
-	// Log response
-	respLog := &model.ResponseLog{
+	h.httpRequestResponseTransformer.TransformResponse(resp)
+
+	respLog := &model.Log{
+		ID:           uuid.New().String(),
+		ProcessType:  model.ProcessTypeResponse,
+		Method:       c.Method(),
+		Path:         c.Path(),
+		StatusCode:   resp.StatusCode,
+		ClientIP:     c.IP(),
+		Timestamp:    startTime,
+		Headers:      convertHeaders(resp.Header),
 		TraceID:      traceID,
-		RequestID:    reqLog.ID,
-		Timestamp:    time.Now(),
-		StatusCode:   responseWriter.StatusCode(),
-		Headers:      make(map[string]string),
-		ResponseBody: responseWriter.Body(),
+		URL:          targetURL,
+		UserAgent:    c.Get("User-Agent"),
+		Body:         body,
 		ResponseTime: duration,
 	}
-
-	for k, v := range responseWriter.Header() {
-		if len(v) > 0 {
-			respLog.Headers[k] = v[0]
+	go func(log *model.Log) {
+		if err := h.logSvc.LogRequest(log); err != nil {
+			h.logger.Error().Err(err).Msg("Failed to log response")
 		}
+	}(respLog)
+
+	// Update metrics
+	h.metrics.ObserveRequestDuration(method, path, strconv.Itoa(resp.StatusCode), duration)
+	h.metrics.IncRequestCounter(method, path, strconv.Itoa(resp.StatusCode))
+
+	// Send response
+	c.Status(resp.StatusCode)
+	// copy all response headers
+	for k, v := range resp.Header {
+		c.Set(k, v[0])
 	}
 
-	h.logSvc.LogResponse(respLog)
-
-	return nil
+	return c.Send(body)
 }

@@ -25,16 +25,19 @@ func NewMongoRepository(uri, dbName string) (*MongoRepository, error) {
 	}, nil
 }
 
-func (r *MongoRepository) SaveRequestLog(ctx context.Context, log *model.RequestLog) error {
-	_, err := r.db.Collection("request_logs").InsertOne(ctx, log)
-	return err
-}
-
-func (r *MongoRepository) SaveResponseLog(ctx context.Context, log *model.ResponseLog) error {
-	_, err := r.db.Collection("response_logs").InsertOne(ctx, log)
-	return err
-}
-
 func (r *MongoRepository) Close() error {
 	return r.client.Disconnect(context.Background())
+}
+
+func (r *MongoRepository) SaveLog(ctx context.Context, log *model.Log) error {
+	_, err := r.db.Collection("logs").InsertOne(ctx, log)
+	return err
+}
+
+func (r *MongoRepository) Migrate(ctx context.Context) error {
+	return nil
+}
+
+func (r *MongoRepository) SaveLogs(ctx context.Context, logs []*model.Log) error {
+	return nil
 }

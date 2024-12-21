@@ -52,13 +52,8 @@ func (r *CouchbaseRepository) SaveLog(ctx context.Context, log *model.Log) error
 }
 
 func (r *CouchbaseRepository) SaveLogs(ctx context.Context, logs []*model.Log) error {
-	collection := r.Bucket.DefaultCollection()
 	for _, log := range logs {
-		_, err := collection.Upsert(
-			fmt.Sprintf("log_%s", log.ID),
-			log,
-			&gocb.UpsertOptions{},
-		)
+		_, err := r.Bucket.DefaultCollection().Upsert(log.ID, log, nil)
 		if err != nil {
 			return err
 		}
